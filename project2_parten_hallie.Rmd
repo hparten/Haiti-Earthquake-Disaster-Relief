@@ -1,0 +1,1243 @@
+---
+title: "Disaster Relief Project 2 code"
+author: "Hallie Parten"
+date: "2023-08-07"
+output: 
+  html_document:
+---
+```{r}
+#################
+##Load Packages##
+#################
+
+library(graphics)
+library(tidyverse)
+library(GGally)
+library(caret)
+library(parallel)
+library(doParallel)
+library(mapview)
+library(comprehenr)
+library(reshape2)
+library(gtsummary)
+library(glmnet)
+library(randomForest)
+library(ROCR)
+library(kernlab)
+```
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+##################
+##Data Wrangling##
+##################
+
+non1 <- read_table('orthovnir057_ROI_NON_Blue_Tarps.txt', skip=7)
+colnames(non1) <- c('ID', 'X', 'Y', 'Map X', 'Map Y', 'Lat', 'Lon', 'B1', 'B2', 'B3')
+non1 <- non1[,-c(11, 12, 13)]
+
+non2 <- read_table('orthovnir067_ROI_NOT_Blue_Tarps.txt', skip=7)
+colnames(non2) <- c('ID', 'X', 'Y', 'Map X', 'Map Y', 'Lat', 'Lon', 'B1', 'B2', 'B3')
+non2 <- non2[,-c(11, 12, 13)]
+
+non3 <- read_table('orthovnir069_ROI_NOT_Blue_Tarps.txt', skip=7)
+colnames(non3) <- c('ID', 'X', 'Y', 'Map X', 'Map Y', 'Lat', 'Lon', 'B1', 'B2', 'B3')
+non3 <- non3[,-c(11, 12, 13)]
+
+non4 <- read_table('orthovnir078_ROI_NON_Blue_Tarps.txt', skip=7)
+colnames(non4) <- c('ID', 'X', 'Y', 'Map X', 'Map Y', 'Lat', 'Lon', 'B1', 'B2', 'B3')
+non4 <- non4[,-c(11, 12, 13)]
+
+bt1 <- read_table('orthovnir067_ROI_Blue_Tarps_data.txt')
+colnames(bt1) <- c('B1', 'B2', 'B3')
+bt1 <- bt1[, -4]
+
+bt2 <- read_table('orthovnir067_ROI_Blue_Tarps.txt', skip=7)
+colnames(bt2) <- c('ID', 'X', 'Y', 'Map X', 'Map Y', 'Lat', 'Lon', 'B1', 'B2', 'B3')
+bt2 <- bt2[,-c(11, 12, 13)]
+
+bt3 <- read_table('orthovnir069_ROI_Blue_Tarps.txt', skip=7)
+colnames(bt3) <- c('ID', 'X', 'Y', 'Map X', 'Map Y', 'Lat', 'Lon', 'B1', 'B2', 'B3')
+bt3 <- bt3[,-c(11, 12, 13)]
+
+bt4 <- read_table('orthovnir078_ROI_Blue_Tarps.txt', skip=7)
+colnames(bt4) <- c('ID', 'X', 'Y', 'Map X', 'Map Y', 'Lat', 'Lon', 'B1', 'B2', 'B3')
+bt4 <- bt4[,-c(11, 12, 13)]
+
+##check if pixel values in bt1 = pixel values in bt2
+all(bt1$B1 == bt2$B1)
+all(bt1$B2 == bt1$B2)
+all(bt1$B3 == bt2$B3)
+rm(bt1)
+
+##combine all blue tarp dfs and non blue tarp dfs
+##add indicator variables for presence of blue tarp
+bt <- rbind(bt2, bt3, bt4)
+bt['bt'] <- 'bluetarp'
+bt$bt <- as.factor(bt$bt)
+
+non <- rbind (non1, non2, non3, non4)
+non['bt'] <- 'other'
+non$bt <- as.factor(non$bt)
+
+holdout <- rbind(bt, non)
+
+##ensure that 'bluetarp' is the reference class
+holdout$bt <- relevel(holdout$bt, ref = "bluetarp")
+levels(holdout$bt)
+```
+
+```{r wrangle1}
+library(scales)
+##Decide which columns map to Red, Green, Blue
+non$B1 <- rescale(non$B1)
+non$B2 <- rescale(non$B2)
+non$B3 <- rescale(non$B3) 
+bt$B1 <- rescale(bt$B1)
+bt$B2 <- rescale(bt$B2)
+bt$B3 <- rescale(bt$B3) 
+
+
+bt_colors <- rgb(bt$B1, bt$B2, bt$B3)
+bt_colors2 <- rgb(bt$B1, bt$B3, bt$B2)
+bt_colors3 <- rgb(bt$B2, bt$B1, bt$B3)
+bt_colors4 <- rgb(bt$B2, bt$B3, bt$B1)
+bt_colors5 <- rgb(bt$B3, bt$B2, bt$B1)
+bt_colors6 <- rgb(bt$B3, bt$B1, bt$B2)
+
+non_colors <- rgb(non$B1, non$B2, non$B3)
+non_colors2 <- rgb(non$B1, non$B3, non$B2)
+non_colors3 <- rgb(non$B2, non$B1, non$B3)
+non_colors4 <- rgb(non$B2, non$B3, non$B1)
+non_colors5 <- rgb(non$B3, non$B2, non$B1)
+non_colors6 <- rgb(non$B3, non$B1, non$B2)
+
+
+par(mfrow = c(3, 2))
+##blue tarp spectrum1
+image(1:nrow(bt), 1, as.matrix(1:nrow(bt)), 
+      col=bt_colors,
+      xlab="B1=red, B2=green, B3=blue", ylab = "BlueTarp", xaxt = "n", yaxt = "n", bty = "n")
+
+##non bt spectrum1
+image(1:nrow(non), 1, as.matrix(1:nrow(non)), 
+      col=non_colors,
+      xlab="B1=red, B2=green, B3=blue", ylab = "Other", xaxt = "n", yaxt = "n", bty = "n")
+
+
+##blue tarp spectrum1
+image(1:nrow(bt), 1, as.matrix(1:nrow(bt)), 
+      col=bt_colors2,
+      xlab="B1=red, B2=blue, B3=green", ylab = "BlueTarp", xaxt = "n", yaxt = "n", bty = "n")
+
+##non bt spectrum1
+image(1:nrow(non), 1, as.matrix(1:nrow(non)), 
+      col=non_colors2,
+      xlab="B1=red, B2=blue, B3=green", ylab = "Other", xaxt = "n", yaxt = "n", bty = "n")
+
+
+##blue tarp spectrum1
+image(1:nrow(bt), 1, as.matrix(1:nrow(bt)), 
+      col=bt_colors3,
+      xlab="B1=green, B2=red, B3=blue", ylab = "BlueTarp", xaxt = "n", yaxt = "n", bty = "n")
+
+
+##non bt spectrum1
+image(1:nrow(non), 1, as.matrix(1:nrow(non)), 
+      col=non_colors3,
+      xlab="B1=green, B2=red, B3=blue", ylab = "Other", xaxt = "n", yaxt = "n", bty = "n")
+
+image(1:nrow(bt), 1, as.matrix(1:nrow(bt)), 
+      col=bt_colors4,
+      xlab="B1=blue, B2=red, B3=green", ylab = "BlueTarp" , xaxt = "n", yaxt = "n", bty = "n")
+
+image(1:nrow(bt), 1, as.matrix(1:nrow(bt)), 
+      col=non_colors4,
+      xlab="B1=blue, B2=red, B3=green", ylab = "Other", xaxt = "n", yaxt = "n", bty = "n")
+
+
+image(1:nrow(bt), 1, as.matrix(1:nrow(bt)), 
+      col=bt_colors5,
+      xlab="B1=blue, B2=green, B3=red", ylab = "BlueTarp", xaxt = "n", yaxt = "n", bty = "n")
+
+image(1:nrow(non), 1, as.matrix(1:nrow(non)), 
+      col=non_colors5,
+      xlab="B1=blue, B2=green, B3=red", ylab = "Other", xaxt = "n", yaxt = "n", bty = "n")
+
+
+image(1:nrow(bt), 1, as.matrix(1:nrow(bt)), 
+      col=bt_colors6,
+      xlab="B1=green, B2=blue, B3=red", ylab = "BlueTarp", xaxt = "n", yaxt = "n", bty = "n")
+
+image(1:nrow(bt), 1, as.matrix(1:nrow(bt)), 
+      col=non_colors6,
+      xlab="B1=green, B2=blue, B3=red", ylab = "Other", xaxt = "n", yaxt = "n", bty = "n")
+
+
+##rename B1, B2, B3 as RGB 
+holdout <- holdout %>% 
+  rename(Red = B1,
+         Green = B2,
+         Blue = B3, 
+         BT = bt)
+```
+
+```{r EDA1, cache=TRUE}
+###########################
+##Compare to Training Set##
+###########################
+
+##import training set
+train <- read.csv('HaitiPixels.csv')
+
+train <- train %>% 
+  mutate(BT = ifelse(Class=='Blue Tarp', 1, 0)) %>% 
+  select(-Class)
+
+#convert BT to factor and name levels
+train$BT <- as.factor(train$BT)
+levels(train$BT) <- c("other", "bluetarp")
+train$BT <- relevel(train$BT, ref = "bluetarp")
+
+##Final descriptives - holdout
+tbl_summary(holdout, include=c(Lat, Lon, Red, Green, Blue, BT), missing='always', missing_text = "(Missing)") %>% 
+  modify_caption('**Holdout Set**')
+
+##Final descriptives - training
+tbl_summary(train, missing='always', missing_text = "(Missing)") %>% 
+  modify_caption('**Training Set**')
+```
+```{r EDA2, cache=TRUE}
+ggpairs(train %>% select(Red, Green, Blue), aes(color = train$BT, alpha = 0.3), 
+        lower = list(continuous = wrap("points", alpha = 0.3, size=0.2), combo = wrap("dot", alpha = 0.4, size=0.2)), 
+                      title = "RGB by Class - Training")+
+  scale_color_manual(values=c("#B3CDE3","grey"))+
+  scale_fill_manual(values=c("#B3CDE3","grey"))
+
+ggpairs(holdout %>% select(Red, Green, Blue), aes(color = holdout$BT, alpha = 0.3), 
+        lower = list(continuous = wrap("points", alpha = 0.3, size=0.2), combo = wrap("dot", alpha = 0.4, size=0.2)), 
+                     title = "RGB by Class - Holdout")+
+  scale_color_manual(values=c("#B3CDE3","grey"))+
+  scale_fill_manual(values=c("#B3CDE3","grey"))
+```
+```{r}
+#######################
+##Baseline Classifier##
+#######################
+
+bt <- 2022 
+other <- 61219
+
+zero_rule <- other/(other+bt)
+zero_rule
+```
+
+
+```{r}
+######################
+##Log Transform Sets##
+######################
+
+#training#
+log_train <- train %>% 
+  mutate(Green = log(Green)) %>% 
+  mutate(Red = log(Red)) %>% 
+  mutate(Blue = log(Blue))
+
+#holdout#
+log_holdout <- holdout %>% 
+  mutate(Green = log(Green)) %>% 
+  mutate(Red = log(Red)) %>% 
+  mutate(Blue = log(Blue))
+```
+
+
+```{r}
+#explore log transformation on training
+par(mfcol=c(1, 2))
+pairs(train[1:3], col=train$BT, upper.panel=NULL, pch='.')
+title('RGB by Class - Train')
+pairs(log_train[1:3], col=log_train$BT, upper.panel=NULL, pch='.')
+title('log(RBG) by Class - Train')
+
+#explore log transformation on holdout
+par(mfcol=c(1, 2))
+pairs(holdout[8:10], col=holdout$BT, upper.panel=NULL, pch='.')
+title('RGB by Class - Holdout')
+pairs(log_holdout[8:10], col=log_holdout$BT, upper.panel=NULL, pch='.')
+title('log(RBG) by Class - Holdout')
+```
+
+```{r}
+##set up parallel processing##
+no_cores <- detectCores() - 1
+c1 <- makePSOCKcluster(no_cores)
+registerDoParallel(c1)
+```
+
+```{r functions, cache=TRUE}
+##########################
+##Functions for Training##
+##########################
+
+##function to evaluate various models with 10-fold cross-validation##
+
+fitModel <- function(data, method, formula, tuneGrid, metric, ...) {
+  
+  trControl <- trControl <- caret::trainControl(method='cv', 
+                                                number=10,
+                                                savePredictions=TRUE,
+                                                classProbs=TRUE, 
+                                                summaryFunction = twoClassSummary, 
+                                                allowParallel = TRUE)
+  model <- caret::train(formula, 
+                        data=data,
+                        method=method,
+                        tuneGrid=tuneGrid,
+                        preProcess=c("center", "scale"),
+                        trControl=trControl,
+                        metric=metric,
+                        maximize=TRUE,
+                        ...)
+}
+
+##functions to evaluate the ROC curve based on the out-of-fold predicted probabilities and AUC of each model##
+
+modelROC <- function(model, threshold){
+  predob_cv <- ROCR::prediction(model$pred$bluetarp, model$pred$obs, label.ordering=c('other', 'bluetarp'))
+  model.roc <- ROCR::performance(predob_cv, measure='tpr', x.measure='fpr')
+  par(mfcol = c(1, 2))
+  par(pty='s')
+  plot(model.roc, colorize=TRUE, main=paste('AUC = ', ROCR::performance(predob_cv,"auc")@y.values[[1]]))
+  par(pty='s')
+  plot(model.roc, colorize=TRUE, print.cutoffs.at=threshold, main= 'ROC Curve zoomed-in', xlim=c(0,0.1), ylim=c(0.8,1))
+}
+
+##function to select a threshold value##
+
+modelThreshold <- function(model, metrics){
+  threshold.stats <- caret::thresholder(model,
+                         threshold = seq(0.05, 0.95, by = 0.05),
+                         final=TRUE,
+                         statistics = "all")
+  threshold.stats$FNR <- 1 - threshold.stats$Sensitivity
+  threshold.stats$FPR <- 1 - threshold.stats$Specificity
+  
+  return(threshold.stats %>% 
+            dplyr::select(all_of(metrics)))
+}
+
+##function to compare threshold-selection metrics##
+
+graphThreshold <- function(model, metrics){
+  threshold.stats <- caret::thresholder(model,
+                         threshold = seq(0.05, 0.95, by = 0.05),
+                         statistics = "all")
+  threshold.stats$FNR <- 1 - threshold.stats$Sensitivity
+  threshold.stats$FPR <- 1 - threshold.stats$Specificity
+  
+  colnames <- colnames(threshold.stats)
+  non_metrics <- to_vec(for(i in colnames) if (!i %in% metrics) i)
+  threshold.stats.long <- melt(threshold.stats, value.name ='Values', id = non_metrics)
+  
+  return( ggplot(threshold.stats.long, aes(x=prob_threshold, y=Values, color=variable))+
+      geom_line())
+}
+```
+
+```{r LR, message=TRUE, warning=FALSE, cache=TRUE, dependson='functions'}
+############
+##Training##
+############
+
+##Logistic##
+set.seed(704)
+
+#train model
+logistic_log_5 <- fitModel(log_train, 'glm', BT~Blue*Red+Blue*Green, NULL, 'ROC', family='binomial')
+
+#regression coefficients
+t1 <- tbl_regression(logistic_log_5$finalModel) %>% 
+  modify_caption('**LR Coefficient Estimates**')
+t1
+
+#print performance metrics
+logistic_log_5.performance <- c(logistic_log_5$results$ROC, logistic_log_5$results$Sens)
+metric <- c('AUC', 'Sensitivity')
+log.models <- data.frame(metric, logistic_log_5.performance)
+log.models %>% 
+  knitr::kable(digits=6, caption = 'Model Selection Metrics') %>%
+  kableExtra::kable_styling(full_width=FALSE)
+
+#print ROC curve
+log_ROC <- modelROC(logistic_log_5, 0.25)
+
+#print threshold graphs
+log_upper <- graphThreshold(logistic_log_5, c('Sensitivity', 'Precision', 'F1'))+ 
+  labs(title="Fig 1.1: Performance Metrics by Threshold",
+       caption='Threshold was selected at max. F1 ')+
+  theme(legend.position="bottom", title=element_text(size=9))
+
+log_lower <- graphThreshold(logistic_log_5, c('FPR', 'FNR'))+
+  theme(legend.position="bottom", title=element_text(size=9))+ 
+  labs(title="Figure 1.2: Performance Metrics by Threshold", 
+       caption='')
+
+gridExtra::grid.arrange(log_upper, log_lower, ncol=2)
+
+#print threshold metrics
+log_thresh <- modelThreshold(logistic_log_5, c("prob_threshold", "F1", "Accuracy", "Sensitivity", "FPR"))
+log_thresh <- log_thresh[which.max(log_thresh$F1),]
+log_thresh %>% 
+  knitr::kable(digits=5, caption = 'Threshold Selection Metrics (Highest F1)') %>%
+  kableExtra::kable_styling(full_width=FALSE)
+
+#capture performance metrics for final table
+log_final <- caret::thresholder(logistic_log_5,
+                         threshold = 0.25,
+                         statistics = c("Sensitivity", "Precision", "F1", "Accuracy", "Specificity"))
+```
+
+```{r lda, message=TRUE, warning=FALSE, cache=TRUE, dependson='functions'}
+##LDA##
+set.seed(704)
+
+#fit model on non-log data for comparison 
+lda_5 <- fitModel(train, 'lda', BT~Blue*Red+Blue*Green, NULL, 'ROC')
+
+#fit model on log data
+lda_log_5 <- fitModel(log_train, 'lda', BT~Blue*Red+Blue*Green, NULL, 'ROC')
+
+#print model performance
+lda_5.performance <- c(lda_5$results$ROC, lda_5$results$Sens)
+lda_log_5.performance<-c(lda_log_5$results$ROC, lda_log_5$results$Sens)
+metric <- c('AUC', 'Sensitivity')
+lda.models <- data.frame(metric, lda_5.performance, lda_log_5.performance)
+colnames(lda.models) <- c('metric', 'LDA', 'log LDA')
+lda.models %>% 
+  knitr::kable(digits=6, caption = 'Model Selection Metrics') %>%
+  kableExtra::kable_styling(full_width=FALSE)
+
+metric <- c('AUC', 'Sensitivity')
+lda.models <- data.frame(metric, lda_log_5.performance)
+colnames(lda.models) <- c('metric', 'log LDA')
+lda.models %>% 
+  knitr::kable(digits=6, caption = 'Model Selection Metrics') %>%
+  kableExtra::kable_styling(full_width=FALSE)
+
+#print ROC curves
+lda_ROC <- modelROC(lda_5, 0.10)
+
+lda_log_ROC <- modelROC(lda_log_5, 0.10)
+
+#print threshold graphs
+lda_upper <- graphThreshold(lda_log_5, c('Sensitivity', 'Precision', 'F1'))+ 
+  labs(title="Fig 2.1: Performance Metrics by Threshold",
+       caption='Threshold was selected at max. F1 ')+
+  theme(legend.position="bottom", title=element_text(size=9))
+
+lda_lower <- graphThreshold(lda_log_5, c('FPR', 'FNR'))+
+  theme(legend.position="bottom", title=element_text(size=9))+ 
+  labs(title="Figure 2.2: Performance Metrics by Threshold", 
+       caption='')
+
+gridExtra::grid.arrange(lda_upper, lda_lower, ncol=2)
+
+#print threshold metrics
+lda_thresh <- modelThreshold(lda_log_5, c("prob_threshold", "F1", "Accuracy", "Sensitivity", "FPR"))
+lda_thresh <- lda_thresh[which.max(lda_thresh$F1),]
+lda_thresh %>% 
+  knitr::kable(digits=5, caption = 'Threshold Selection Metrics (Highest F1)') %>%
+  kableExtra::kable_styling(full_width=FALSE)
+
+#capture performance metrics for final table
+lda_final <- caret::thresholder(lda_log_5,
+                         threshold = 0.10,
+                         statistics = c("Sensitivity", "Precision", "F1", "Accuracy", "Specificity"))
+```
+
+```{r qda, cache=TRUE, dependson='functions'}
+##QDA##
+set.seed(704)
+
+#fit model
+qda_log_3 <- fitModel(log_train, 'qda', BT~Blue+Red+Green, NULL, 'ROC')
+
+#print model performance
+qda_log_3.performance <- c(qda_log_3$results$ROC, qda_log_3$results$Sens)
+metric <- c('AUC', 'Sensitivity')
+qda.models <- data.frame(metric, qda_log_3.performance)
+qda.models %>% 
+  knitr::kable(digits=6, caption = 'Model Selection Metrics') %>%
+  kableExtra::kable_styling(full_width=FALSE)
+
+#print ROC curve
+qda_ROC <- modelROC(qda_log_3, 0.25)
+
+#print threshold graphs
+qda_upper <- graphThreshold(qda_log_3, c('Sensitivity', 'Precision', 'F1'))+ 
+  labs(title="Fig 3.1: Performance Metrics by Threshold",
+       caption='Threshold was selected at max. F1 ')+
+  theme(legend.position="bottom", title=element_text(size=9))
+
+qda_lower <- graphThreshold(logistic_log_5, c('FPR', 'FNR'))+
+  theme(legend.position="bottom", title=element_text(size=9))+ 
+  labs(title="Figure 3.2: Performance Metrics by Threshold", 
+       caption='')
+
+gridExtra::grid.arrange(qda_upper, qda_lower, ncol=2)
+
+#print threshold metrics
+qda_thresh <- modelThreshold(qda_log_3, c("prob_threshold", "F1", "Accuracy", "Sensitivity", "FPR"))
+qda_thresh <- qda_thresh[which.max(qda_thresh$F1),]
+qda_thresh %>% 
+  knitr::kable(digits=5, caption = 'Threshold Selection Metrics (Highest F1)') %>%
+  kableExtra::kable_styling(full_width=FALSE)
+
+#capture performance metrics for final table
+qda_final <- caret::thresholder(qda_log_3,
+                         threshold = 0.25,
+                         statistics = c("Sensitivity", "Precision", "F1", "Accuracy", "Specificity"))
+```
+
+```{r knn, cache=TRUE, dependson='functions'}
+##KNN##
+set.seed(704)
+
+#set up tune grid
+KNN_tuneGrid <- expand.grid(k=seq(5, 50, by=4))
+
+#fit model
+knn_log_5 <- fitModel(log_train, 'knn', BT~Blue*Red+Blue*Green, KNN_tuneGrid, 'ROC')
+
+#print tuning graph
+knn_log_5.tune <- ggplot(knn_log_5)+
+  geom_ribbon(data=knn_log_5$results, aes(x=k, ymin=ROC-ROCSD, ymax=ROC+ROCSD), 
+              color='grey', alpha=0.2)+
+  geom_point(data=knn_log_5$results %>% slice_max(ROC, n=1), color='blue', size=2.5)+ 
+  labs(title='KNN Parameter Tuning (k)')+
+  theme(plot.title = element_text(size = rel(0.85), hjust = 0.5))
+knn_log_5.tune
+
+#print model performance
+knn_log_5.performance <- knn_log_5$results %>% filter(k==knn_log_5$bestTune$k) %>% select(k, ROC, Sens)
+knn_log_5.performance %>% 
+  knitr::kable(digits=6, caption='KNN Model Selection Metrics') %>%
+  kableExtra::kable_styling(full_width=FALSE)
+
+#print ROC curve
+knn_ROC <- modelROC(knn_log_5, 0.45)
+
+#print threshold graphs
+knn_upper <- graphThreshold(knn_log_5, c('Sensitivity', 'Precision', 'F1'))+ 
+  labs(title="Fig 4.1: Performance Metrics by Threshold",
+       caption='Threshold was selected at max. F1 ')+
+  theme(legend.position="bottom", title=element_text(size=9))
+
+knn_lower <- graphThreshold(knn_log_5, c('FPR', 'FNR'))+
+  theme(legend.position="bottom", title=element_text(size=9))+ 
+  labs(title="Figure 4.2: Performance Metrics by Threshold", 
+       caption='')
+
+gridExtra::grid.arrange(knn_upper, knn_lower, ncol=2)
+
+#print threshold metrics
+knn_thresh <- modelThreshold(knn_log_5, c("prob_threshold", "F1", "Accuracy", "Sensitivity", "FPR"))
+knn_thresh <- knn_thresh[which.max(knn_thresh$F1),]
+knn_thresh %>% 
+  knitr::kable(digits=5, caption = 'Threshold Selection Metrics (Highest F1)') %>%
+  kableExtra::kable_styling(full_width=FALSE)
+
+#capture model performance for final table
+knn_final <- caret::thresholder(knn_log_5,
+                         threshold = 0.45,
+                         statistics = c("Sensitivity", "Precision", "F1", "Accuracy", "Specificity"))
+```
+
+```{r helper, cache=TRUE}
+##helper functions##
+##from Module 5 Markdown
+showTuningResults <- function(model) {
+  results <- model$results
+  bestResults <- results %>% slice_max(ROC, n=1)
+  
+  ggplot(model) + 
+    geom_ribbon(data=results, aes(x=lambda, ymin=ROC-ROCSD, ymax=ROC+ROCSD), 
+                color='grey', alpha=0.2) +
+    geom_point(data=bestResults, color='red', size=2.5) +
+    scale_x_log10()
+}
+
+bestTune_result = function(model) {
+  best = which(rownames(model$results) == rownames(model$bestTune))
+  best_result = model$results[best, ]
+  rownames(best_result) = NULL
+  best_result
+}
+```
+
+```{r enp, cache=TRUE, dependson='functions', dependson='helper'}
+##Penalized Logistic with Elastic Net##
+set.seed(704)
+
+#set up tune grid
+ENP_tuneGrid <- expand.grid(alpha=c(0, 0.5, 1), lambda=10^seq(-6, 0.4, 0.2)) 
+
+#fit model
+enp_log_5 <- fitModel(log_train, 'glmnet', BT~Blue*Red+Blue*Green, ENP_tuneGrid, 'ROC', family='binomial')
+enp_log_5.performance <- bestTune_result(enp_log_5) %>% select(alpha, lambda, ROC, Sens)
+
+#print tuning graph
+enp_log_5.tune <- showTuningResults(enp_log_5)+
+  labs(title="Elastic Net Penalty Parameter Tuning", caption='Mixing Percentage = 1 is equivalent to LASSO regression')+
+  theme(legend.position="bottom")
+enp_log_5.tune
+
+#print model performance 
+enp_log_5.performance %>% 
+  knitr::kable(digits=6, caption='Penalized LR Model Selection Metrics') %>%
+  kableExtra::kable_styling(full_width=FALSE)
+
+#plot variable shrinkage
+plot(enp_log_5$finalModel, xvar="lambda")
+title('Penalized LR Coefficient Estimates by Log Lambda', line=3)
+
+#compare penalized LR to LR and print coefs
+enp_log_5.coef <- as.data.frame.matrix(coef(enp_log_5$finalModel, enp_log_5$bestTune$lambda))
+logistic_compare <- cbind(data.frame(coef(logistic_log_5$finalModel), enp_log_5.coef))
+colnames(logistic_compare) <- c('Logistic', 'Penalized')
+logistic_compare <- logistic_compare %>% 
+  knitr::kable(digits=6, caption='Penalized LR Coef. vs. LR Coef') %>%
+  kableExtra::kable_styling(full_width=FALSE)
+logistic_compare
+
+#print ROC curve
+enp_pred <- predict(enp_log_5, log_train, type='prob')
+predob_enp <- ROCR::prediction(enp_pred$bluetarp, log_train$BT, label.ordering = c('other', 'bluetarp'))
+enp.roc <-ROCR:: performance(predob_enp, measure='tpr', x.measure='fpr')
+par(mfcol = c(1, 2))
+par(pty='s')
+plot(enp.roc, colorize=TRUE, print.auc=TRUE)
+title(paste('AUC = ', ROCR::performance(predob_enp,"auc")@y.values[[1]]))
+par(pty='s')
+plot(enp.roc, colorize=TRUE, print.cutoffs.at=0.25, xlim=c(0,0.1), ylim=c(0.8,1))
+title('ROC Curve zoomed-in')
+
+#print threshold graphs
+enp_upper <- graphThreshold(enp_log_5, c('Sensitivity', 'Precision', 'F1'))+ 
+  labs(title="Fig 5.1: Performance Metrics by Threshold",
+       caption='Threshold was selected at max. F1')+
+  theme(legend.position="bottom", title=element_text(size=9))
+
+enp_lower <- graphThreshold(enp_log_5, c('FPR', 'FNR'))+
+  theme(legend.position="bottom", title=element_text(size=9))+ 
+  labs(title="Figure 5.2: Performance Metrics by Threshold", 
+       caption='')
+
+gridExtra::grid.arrange(enp_upper, enp_lower, ncol=2)
+
+#print threshold metrics
+enp_thresh <- modelThreshold(enp_log_5, c("prob_threshold", "F1", "Accuracy", "Sensitivity", "FPR"))
+enp_thresh <- enp_thresh[which.max(enp_thresh$F1),]
+enp_thresh %>% 
+  knitr::kable(digits=5, caption = 'Threshold Selection Metrics (Highest F1)') %>%
+  kableExtra::kable_styling(full_width=FALSE)
+
+#capture performance metrics for final table
+enp_final <- caret::thresholder(enp_log_5,
+                         threshold = 0.25,
+                         statistics = c("Sensitivity", "Precision", "F1", "Accuracy", "Specificity"))
+```
+
+```{r rf, cache=TRUE, dependson='functions', dependson='helper'}
+##Random Forest##
+set.seed(704)
+
+#set up tune grid
+tunegrid.3 <- expand.grid(.mtry=c(1:3))
+tunegrid.5 <- expand.grid(.mtry=c(1:5))
+
+#train both models
+rf_3 <- fitModel(train, 'rf', BT~., tunegrid.3, 'ROC')
+rf_5 <- fitModel(train, 'rf', BT~Blue*Red+Blue*Green, tunegrid.5, 'ROC')
+
+#print performance metrics for both models
+rf_3.performance <- bestTune_result(rf_3) %>% select(mtry, ROC, Sens)
+rf_5.performance <- bestTune_result(rf_5) %>% select(mtry, ROC, Sens)
+
+models_rf <- c('p=3', 'p=5 (Interactions)')
+rf.models <- rbind(rf_3.performance, rf_5.performance)
+rf.models <- cbind(models_rf, rf.models)
+rf.models %>% 
+  knitr::kable(digits=6, caption='Model Selection Metrics') %>%
+  kableExtra::kable_styling(full_width=FALSE)
+
+#print variable importance plot for highest performing model
+rf_5.Imp <- varImp(rf_5)
+rf_5.Imp
+plot(rf_5.Imp, main='RF Feature Importance')
+
+#print ROC curve
+rf.predob_cv <- ROCR::prediction(rf_5$pred$bluetarp, rf_5$pred$obs, label.ordering=c('other', 'bluetarp'))
+rf.model.roc <- ROCR::performance(rf.predob_cv, measure='tpr', x.measure='fpr')
+par(mfcol = c(1, 2))
+par(pty='s')
+plot(rf.model.roc, colorize=TRUE, main=paste('AUC = ', rf_5.performance[1,2]))
+par(pty='s')
+plot(rf.model.roc, colorize=TRUE, print.cutoffs.at=0.4, main= 'ROC Curve zoomed-in', xlim=c(0,0.1), ylim=c(0.8,1))
+
+#print threshold graphs
+rf_upper <- graphThreshold(rf_5, c('Sensitivity', 'Precision', 'F1'))+ 
+  labs(title="Fig 6.1: Performance Metrics by Threshold",
+       caption='Threshold was selected at max. F1 ')+
+  theme(legend.position="bottom", title=element_text(size=9))
+
+rf_lower <- graphThreshold(rf_5, c('FPR', 'FNR'))+
+  theme(legend.position="bottom", title=element_text(size=9))+ 
+  labs(title="Figure 6.2: Performance Metrics by Threshold", 
+       caption='')
+
+gridExtra::grid.arrange(rf_upper, rf_lower, ncol=2)
+
+#print threshold metrics
+rf_thresh <- modelThreshold(rf_5, c("prob_threshold", "F1", "Accuracy", "Sensitivity", "FPR"))
+rf_thresh <- rf_thresh[which.max(rf_thresh$F1),]
+rf_thresh %>% 
+  knitr::kable(digits=5, caption = 'Threshold Selection Metrics (Highest F1)') %>%
+  kableExtra::kable_styling(full_width=FALSE)
+
+#capture model performance for final table
+rf_final <- caret::thresholder(rf_5,
+                         threshold = 0.4,
+                         statistics = c("Sensitivity", "Precision", "F1", "Accuracy", "Specificity"))
+```
+
+```{r}
+##SVM## 
+set.seed(704)
+
+#Linear kernel
+lin.tuneGrid=expand.grid(C=c(0.1, 1, 10, 100, 1000))
+lin.svm <- fitModel(train, "svmLinear", BT~Red+Green+Blue, lin.tuneGrid, 'ROC')
+
+#Polynomial kernel'
+poly.tuneGrid=expand.grid(degree=c(1, 2, 3), scale=c(1, 10), C=c(0.1, 1, 10, 100, 1000))
+poly.svm <- fitModel(train, "svmPoly", BT~Red+Green+Blue, poly.tuneGrid, 'ROC')
+
+#Radial kernel
+rad.tuneGrid=expand.grid(C = c(0.1, 1, 10, 100, 1000), sigma = c(0.5, 1, 2, 3, 4))
+rad.svm <- fitModel(train, "svmRadial", BT~Red+Green+Blue, rad.tuneGrid, 'ROC')
+
+#radial kernel without red for comparison
+rad.svm.noRed <- fitModel(train, "svmRadial", BT~Green+Blue, rad.tuneGrid, 'ROC')
+bestTune_result(rad.svm.noRed)
+```
+
+
+
+```{r}
+#print performance for all models 
+svm.lin_perf <- bestTune_result(lin.svm) %>% 
+  select(C, ROC) %>% 
+  mutate(degree = NaN) %>% 
+  mutate(scale = NaN) %>% 
+  mutate(sigma = NaN) %>% 
+  relocate(C, degree, scale, sigma, ROC)
+svm.poly_perf <- bestTune_result(poly.svm) %>% 
+  select(degree, scale, C, ROC) %>% 
+  mutate(sigma = NaN) %>% 
+  relocate(C, degree, scale, sigma, ROC)
+svm.rad_ref <- bestTune_result(rad.svm) %>% 
+  select(sigma, C, ROC) %>% 
+  mutate(degree = NaN) %>% 
+  mutate(scale = NaN) %>% 
+  relocate(C, degree, scale, sigma, ROC)
+svm.kernels <- c('Linear', 'Polynomial', 'Radial')
+svm_perf <- rbind(svm.lin_perf, svm.poly_perf, svm.rad_ref)
+cbind(svm.kernels, svm_perf) %>% 
+  knitr::kable(digits=6, caption='Model Selection Metrics') %>%
+  kableExtra::kable_styling(full_width=FALSE)
+
+#print tuning graph
+rad.svm.results <- rad.svm$results
+best.rad.svm.results <- rad.svm.results %>% slice_max(ROC, n=1)
+ggplot(rad.svm)+
+  geom_ribbon(data=best.rad.svm.results, aes(x=sigma,ymin=ROC-ROCSD, ymax=ROC+ROCSD), 
+             color='grey', alpha=0.2) +
+  geom_point(data=best.rad.svm.results, color='red', size=2.5)+ 
+  labs(title='Radial Kernel SVM Parameter Tuning')
+
+#print variable importance plot
+svm.rad.Imp <- varImp(rad.svm)
+plot(svm.rad.Imp)
+
+#number of support vectors
+rad.svm$finalModel
+
+#print svm classification plot
+rad.fit <- ksvm(BT ~., data=train, kernel='rbfdot', C=100, kpar=list(sigma=3))
+plot(rad.fit, data=train, slice = list(Red=163), pch='.')
+
+#print ROC curve
+svm_pred <- predict(rad.svm, train, type='prob')
+svm.predob <- ROCR::prediction(svm_pred$bluetarp, train$BT, label.ordering = c('other', 'bluetarp'))
+svm.roc <-ROCR:: performance(svm.predob, measure='tpr', x.measure='fpr')
+par(mfcol = c(1, 2))
+par(pty='s')
+plot(svm.roc, colorize=TRUE, print.auc=TRUE)
+title(paste('AUC = ', ROCR::performance(svm.predob,"auc")@y.values[[1]]))
+par(pty='s')
+plot(svm.roc, colorize=TRUE, print.cutoffs.at=0.3, xlim=c(0,0.1), ylim=c(0.8,1))
+title('ROC Curve zoomed-in')
+
+#print threshold graphs
+svm_upper <- graphThreshold(rad.svm, c('Sensitivity', 'Precision', 'F1'))+ 
+  labs(title="Fig 7.1: Performance Metrics by Threshold",
+       caption='Threshold was selected at max. F1 ')+
+  theme(legend.position="bottom", title=element_text(size=9))
+
+svm_lower <- graphThreshold(rad.svm, c('FPR', 'FNR'))+
+  theme(legend.position="bottom", title=element_text(size=9))+ 
+  labs(title="Figure 7.2: Performance Metrics by Threshold", 
+       caption='')
+
+gridExtra::grid.arrange(svm_upper, svm_lower, ncol=2)
+
+#print threshold metrics
+svm_thresh <- modelThreshold(rad.svm, c("prob_threshold", "F1", "Accuracy", "Sensitivity", "FPR"))
+svm_thresh <- svm_thresh[which.max(svm_thresh$F1),]
+svm_thresh %>% 
+  knitr::kable(digits=5, caption = 'Threshold Selection Metrics (Highest F1)') %>%
+  kableExtra::kable_styling(full_width=FALSE)
+
+#capture model performance for final table
+svm_final <- caret::thresholder(rad.svm,
+                         threshold = 0.3,
+                         statistics = c("Sensitivity", "Precision", "F1", "Accuracy", "Specificity"))
+```
+
+
+```{r}
+##################
+##CV Performance##
+##################
+
+#structure data for graph and table
+enp_final <- enp_final %>% 
+  mutate(FPR = 1-Specificity) %>% 
+  select(prob_threshold, Accuracy, Sensitivity, Precision, F1, FPR)
+log_final <- log_final %>% 
+  mutate(FPR = 1-Specificity) %>% 
+  select(prob_threshold, Accuracy, Sensitivity, Precision, F1, FPR)
+lda_final <- lda_final %>%
+  mutate(FPR = 1-Specificity) %>% 
+  select(prob_threshold, Accuracy, Sensitivity, Precision, F1, FPR)
+qda_final <- qda_final %>% 
+  mutate(FPR = 1-Specificity) %>% 
+  select(prob_threshold, Accuracy, Sensitivity, Precision, F1, FPR)
+knn_final <- knn_final %>% 
+  mutate(FPR = 1-Specificity) %>% 
+  select(prob_threshold, Accuracy, Sensitivity, Precision, F1, FPR)
+rf_final <- rf_final %>% 
+  mutate(FPR = 1-Specificity) %>% 
+  select(prob_threshold, Accuracy, Sensitivity, Precision, F1, FPR)
+svm_final <- svm_final %>% 
+  mutate(FPR = 1-Specificity) %>% 
+  select(prob_threshold, Accuracy, Sensitivity, Precision, F1, FPR)
+
+comps <- rbind(log_final, lda_final, qda_final, knn_final, enp_final, rf_final, svm_final)
+model <- c("LR", "LDA", "QDA", "KNN", "LASSO", "RF", "SVM")
+model_params <- c('5 features', '5 features', '3 features', '5 features & k = 29', '4 features, alpha = 1, & lambda = 1e-05', '4 features & mtry = 1', '2 features, radial kernal, c = 100, & sigma = 3')
+transf <- c('yes', 'yes', 'yes', 'yes', 'yes', 'no', 'no')
+auc <- c(logistic_log_5$results$ROC, lda_log_5$results$ROC,
+         qda_log_3$results$ROC, bestTune_result(knn_log_5)[1,2],
+         bestTune_result(enp_log_5)[1,3], bestTune_result(rf_5)[1,2],
+         bestTune_result(rad.svm)[1,3])
+comps_graph <- cbind(model, comps)
+comps_table <- cbind(model, transf, model_params, auc, comps)
+
+
+
+
+#print table
+bestModel_train <- which.max(comps_table$F1)
+comps_table %>% 
+  rename(Model=model, 
+         Log = transf,
+         'Tuned Parameters'=model_params, 
+         AUC=auc, 
+         Threshold=prob_threshold,
+         Recall=Sensitivity) %>% 
+  knitr::kable(digits=6, caption='Cross Validation Performance Metrics') %>%
+  kableExtra::kable_styling(full_width=FALSE) %>% 
+  kableExtra::row_spec(bestModel_train, bold=TRUE, background='#D3D3D3')
+  
+#reshape data to long form
+comps.long <- melt(comps_graph, value.name ='Values', id = c('model', 'prob_threshold', 'FPR', "Sensitivity", "Precision"))
+#print graph
+ggplot(comps.long, aes(x=model, y=Values, fill=variable))+
+  geom_bar(stat='identity', position='dodge')+
+  scale_fill_brewer(palette = 'Blues')+
+  theme_linedraw()+
+  labs(title="Cross Validation Performance")+
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+```{r}
+##sample holdout set to build holdout validation functions
+holdout.samp <- sample_n(holdout, 100000)
+log_holdout.samp <- sample_n(holdout, 100000)
+```
+
+```{r}
+#########################
+##Functions for Testing##
+#########################
+
+#Confusion Matrix helper function from stack overflow 
+#https://stackoverflow.com/questions/23891140/r-how-to-visualize-confusion-matrix-using-the-caret-package
+draw_confusion_matrix <- function(cm) {
+
+  total <- sum(cm$table)
+  res <- as.numeric(cm$table)
+
+  # Generate color gradients. Palettes come from RColorBrewer.
+  bluePalette <- c("#F7FBFF","#DEEBF7", "#C6DBEF","#9ECAE1", "#6BAED6", "#4292C6", "#2171B5", "#08519C","#08306B")
+  redPalette <- c("#FFF5F0","#FEE0D2","#FCBBA1","#FC9272","#FB6A4A","#EF3B2C","#CB181D","#A50F15","#67000D")
+  getColor <- function (blueOrRed = "blue", amount = 0) {
+    if (amount == 0)
+      return("#FFFFFF")
+    palette <- bluePalette
+    if (blueOrRed == "red")
+      palette <- redPalette
+    colorRampPalette(palette)(100)[10 + ceiling(90 * amount / total)]
+  }
+
+  # set the basic layout
+  layout(matrix(c(1,1,2)))
+  par(mar=c(2,2,2,2))
+  plot(c(100, 345), c(300, 450), type = "n", xlab="", ylab="", xaxt='n', yaxt='n')
+  title('CONFUSION MATRIX', cex.main=2)
+
+  # create the matrix 
+  classes = colnames(cm$table)
+  rect(150, 430, 240, 370, col=getColor("blue", res[1]))
+  text(195, 435, classes[1], cex=1.2)
+  rect(250, 430, 340, 370, col=getColor("red", res[3]))
+  text(295, 435, classes[2], cex=1.2)
+  text(125, 370, 'Predicted', cex=1.3, srt=90, font=2)
+  text(245, 450, 'Actual', cex=1.3, font=2)
+  rect(150, 305, 240, 365, col=getColor("red", res[2]))
+  rect(250, 305, 340, 365, col=getColor("blue", res[4]))
+  text(140, 400, classes[1], cex=1.2, srt=90)
+  text(140, 335, classes[2], cex=1.2, srt=90)
+
+  # add in the cm results
+  text(195, 400, res[1], cex=1.6, font=2, col='white')
+  text(195, 335, res[2], cex=1.6, font=2, col='white')
+  text(295, 400, res[3], cex=1.6, font=2, col='white')
+  text(295, 335, res[4], cex=1.6, font=2, col='white')
+
+  # add in the specifics 
+  plot(c(100, 0), c(100, 0), type = "n", xlab="", ylab="", main = "DETAILS", xaxt='n', yaxt='n')
+  text(30, 85, names(cm$byClass[5]), cex=1.2, font=2)
+  text(30, 70, round(as.numeric(cm$byClass[5]), 3), cex=1.2)
+  text(70, 85, names(cm$byClass[6]), cex=1.2, font=2)
+  text(70, 70, round(as.numeric(cm$byClass[6]), 3), cex=1.2)
+
+  # add in the accuracy information 
+  text(30, 35, names(cm$overall[1]), cex=1.5, font=2)
+  text(30, 20, round(as.numeric(cm$overall[1]), 3), cex=1.4)
+  text(70, 35, names(cm$byClass[7]), cex=1.5, font=2)
+  text(70, 20, round(as.numeric(cm$byClass[7]), 3), cex=1.4)
+}
+
+#function to draw ROC curve comparing for the holdout set
+holdoutROC <- function(model_probs, dataset){
+  predob_test <- ROCR::prediction(model_probs, dataset, label.ordering=c('other', 'bluetarp'))
+  model.roc_test <- ROCR::performance(predob_test, measure='tpr', x.measure='fpr')
+  par(mfcol = c(1, 2))
+  par(pty='s')
+  plot(model.roc_test, colorize=T, main=paste('AUC = ',ROCR::performance(predob_test,"auc")@y.values[[1]]))
+  par(pty='s')
+  plot(model.roc_test, colorize=TRUE, main='ROC zoomed-in', xlim=c(0,0.1), ylim=c(0.8,1))
+}
+
+calculateAUC <- function(model_probs, dataset){
+  pred_obs <- ROCR::prediction(model_probs, dataset, label.ordering=c('other', 'bluetarp'))
+  auc <- ROCR::performance(pred_obs,"auc")@y.values[[1]]
+return(auc)
+} 
+```
+
+```{r}
+###########
+##Testing##
+###########
+
+##LR##
+#probs for ROC curve
+lr_probs <- predict(logistic_log_5, log_holdout, type='prob')
+
+#preds for CM
+lr_preds <- ifelse(lr_probs[1]>0.25, 'bluetarp', 'other')
+#generate cm object
+lr_cm <- caret::confusionMatrix(table(Prediction=lr_preds, Reference=log_holdout$BT), mode='prec_recall')
+
+#visualize the confusion matrix
+draw_confusion_matrix(lr_cm)
+
+#ROC curve comparing testing to the holdout set
+holdoutROC(lr_probs$bluetarp, log_holdout$BT)
+
+#create final object for performance table/graph
+lr_metrics <-c(lr_cm$byClass, lr_cm$overall)
+lr_test_final <- as.tibble(rbind(lr_metrics))
+lr_test_final <- lr_test_final %>% 
+  select(Sensitivity, Precision, F1, Accuracy, Specificity)
+
+lr_AUC <- calculateAUC(lr_probs$bluetarp, log_holdout$BT)
+```
+
+```{r}
+##LDA##
+lda_probs <- predict(lda_log_5, log_holdout, type='prob')
+
+lda_preds <- ifelse(lda_probs[1]>0.25, 'bluetarp', 'other')
+#generate cm object
+lda_cm <- caret::confusionMatrix(table(Prediction=lda_preds, Reference=log_holdout$BT), mode='prec_recall')
+#visualize the confusion matrix
+draw_confusion_matrix(lda_cm)
+
+#ROC curve comparing testing to the holdout set
+holdoutROC(lda_probs$bluetarp, log_holdout$BT)
+
+#create final object for performance table/graph
+lda_metrics <-c(lda_cm$byClass, lda_cm$overall)
+lda_test_final <- as.tibble(rbind(lda_metrics))
+lda_test_final <- lda_test_final %>% 
+  select(Sensitivity, Precision, F1, Accuracy, Specificity)
+
+lda_AUC <- calculateAUC(lda_probs$bluetarp, log_holdout$BT)
+```
+
+```{r}
+##QDA##
+qda_probs <- predict(qda_log_3, log_holdout, type='prob')
+
+#generate cm object
+qda_preds <- ifelse(qda_probs[1]>0.10, 'bluetarp', 'other')
+qda_cm <- caret::confusionMatrix(table(Prediction=qda_preds, Reference=log_holdout$BT), mode='prec_recall')
+#visualize the confusion matrix
+draw_confusion_matrix(qda_cm)
+
+#ROC curve comparing testing to the holdout set
+holdoutROC(qda_probs$bluetarp, log_holdout$BT)
+
+#create final object for performance table/graph
+qda_metrics <-c(qda_cm$byClass, qda_cm$overall)
+qda_test_final <- as.tibble(rbind(qda_metrics))
+qda_test_final <- qda_test_final %>% 
+  select(Sensitivity, Precision, F1, Accuracy, Specificity)
+
+qda_AUC <- calculateAUC(qda_probs$bluetarp, log_holdout$BT)
+```
+
+```{r}
+##KNN##
+knn_probs <- predict(knn_log_5, log_holdout, type='prob')
+
+knn_preds <- ifelse(knn_probs[1]>0.45, 'bluetarp', 'other')
+#generate cm object
+knn_cm <- caret::confusionMatrix(table(Prediction=knn_preds, Reference=log_holdout$BT), mode='prec_recall')
+#visualize the confusion matrix
+draw_confusion_matrix(knn_cm)
+
+#ROC curve comparing testing to the holdout set
+holdoutROC(knn_probs$bluetarp, log_holdout$BT)
+
+#create final object for performance table/graph
+knn_metrics <-c(knn_cm$byClass, knn_cm$overall)
+knn_test_final <- as.tibble(rbind(knn_metrics))
+knn_test_final <- knn_test_final %>% 
+  select(Sensitivity, Precision, F1, Accuracy, Specificity)
+
+knn_AUC <- calculateAUC(knn_probs$bluetarp, log_holdout$BT)
+```
+
+```{r}
+##LASSO##
+enp_probs <- predict(enp_log_5, log_holdout, type='prob')
+
+enp_preds <- ifelse(enp_probs[1]>0.25, 'bluetarp', 'other')
+#generate cm object
+enp_cm <- caret::confusionMatrix(table(Prediction=enp_preds, Reference=log_holdout$BT), mode='prec_recall')
+#visualize the confusion matrix
+draw_confusion_matrix(enp_cm)
+
+#ROC curve comparing testing to the holdout set
+holdoutROC(enp_probs$bluetarp, log_holdout$BT)
+
+#create final object for performance table/graph
+enp_metrics <-c(enp_cm$byClass, enp_cm$overall)
+enp_test_final <- as.tibble(rbind(enp_metrics))
+enp_test_final <- enp_test_final %>% 
+  select(Sensitivity, Precision, F1, Accuracy, Specificity)
+
+enp_AUC <- calculateAUC(enp_probs$bluetarp, log_holdout$BT)
+```
+
+```{r}
+##RF##
+rf_probs <- predict(rf_5, holdout, type='prob')
+
+rf_preds <- ifelse(rf_probs[1]>0.40, 'bluetarp', 'other')
+#generate cm object
+rf_cm <- caret::confusionMatrix(table(Prediction=rf_preds, Reference=holdout$BT), mode='prec_recall')
+#visualize the confusion matrix
+draw_confusion_matrix(rf_cm)
+
+#ROC curve comparing testing to the holdout set
+holdoutROC(rf_probs$bluetarp, holdout$BT)
+
+#create final object for performance table/graph
+rf_metrics <-c(rf_cm$byClass, rf_cm$overall)
+rf_test_final <- as.tibble(rbind(rf_metrics))
+rf_test_final <- rf_test_final %>% 
+  select(Sensitivity, Precision, F1, Accuracy, Specificity)
+
+rf_AUC <- calculateAUC(rf_probs$bluetarp, holdout$BT)
+```
+
+```{r}
+##SVM##
+svm_probs <- predict(rad.svm, holdout, type='prob')
+
+svm_preds <- ifelse(svm_probs[1]>0.30, 'bluetarp', 'other')
+#generate cm object
+svm_cm <- caret::confusionMatrix(table(Prediction=svm_preds, Reference=holdout$BT), mode='prec_recall')
+#visualize the confusion matrix
+draw_confusion_matrix(svm_cm)
+
+#ROC curve comparing testing to the holdout set
+holdoutROC(svm_probs$bluetarp, holdout$BT)
+
+#create final object for performance table/graph
+svm_metrics <-c(svm_cm$byClass, svm_cm$overall)
+svm_test_final <- as.tibble(rbind(svm_metrics))
+svm_test_final <- svm_test_final %>% 
+  select(Sensitivity, Precision, F1, Accuracy, Specificity)
+
+svm_AUC <- calculateAUC(svm_probs$bluetarp, holdout$BT)
+```
+
+
+```{r}
+#######################
+##Holdout Performance##
+#######################
+
+#structure data for graph and table
+lr_test_final <- lr_test_final %>%  mutate(FPR = 1-Specificity) %>% select(!Specificity) %>% 
+  relocate(Accuracy, Sensitivity, Precision, F1, FPR)
+lda_test_final <- lda_test_final %>%  mutate(FPR = 1-Specificity) %>% select(!Specificity) %>% 
+  relocate(Accuracy, Sensitivity, Precision, F1, FPR)
+qda_test_final <- qda_test_final %>%  mutate(FPR = 1-Specificity) %>% select(!Specificity) %>% 
+  relocate(Accuracy, Sensitivity, Precision, F1, FPR)
+knn_test_final <- knn_test_final %>%  mutate(FPR = 1-Specificity) %>% select(!Specificity) %>% 
+  relocate(Accuracy, Sensitivity, Precision, F1, FPR)
+enp_test_final <- enp_test_final %>%  mutate(FPR = 1-Specificity) %>% select(!Specificity) %>% 
+  relocate(Accuracy, Sensitivity, Precision, F1, FPR)
+rf_test_final <- rf_test_final %>%  mutate(FPR = 1-Specificity) %>% select(!Specificity) %>% 
+  relocate(Accuracy, Sensitivity, Precision, F1, FPR)
+svm_test_final <- svm_test_final %>%  mutate(FPR = 1-Specificity) %>% select(!Specificity) %>% 
+  relocate(Accuracy, Sensitivity, Precision, F1, FPR)
+
+comps_test <- rbind(lr_test_final, lda_test_final, qda_test_final, knn_test_final, enp_test_final, rf_test_final, svm_test_final)
+auc_test <- c(lr_AUC, lda_AUC, qda_AUC, knn_AUC, enp_AUC, rf_AUC, svm_AUC)
+
+#print table
+bestModel_test <- which.max(comps_test_table$F1)
+comps_test_table <- cbind(model, auc_test, comps_test)
+comps_test_table %>% 
+  rename(Model=model, 
+         AUC=auc_test, 
+         Recall=Sensitivity) %>% 
+  knitr::kable(digits=6, caption='Holdout Valdiation Performance Metrics') %>%
+  kableExtra::kable_styling(full_width=FALSE) %>% 
+  kableExtra::row_spec(bestModel_test, bold=TRUE, background='#D3D3D3')
+  
+  
+#reshape data to long format 
+comps_test.long <- melt(comps_test_table, value.name ='Values', id = c('model', 'auc_test', 'FPR', "Sensitivity", "Precision"))
+
+#new color palattes
+test_palette <- c("#C6DBEF","#08519C")
+test_palette <- c(test_palette, rev(test_palette))
+
+#print barplot
+ggplot(comps_test.long, aes(x=model, y=Values, fill=variable))+
+  geom_bar(stat='identity', position='dodge')+
+  scale_fill_manual(values=test_palette)+
+  theme_linedraw()+
+  labs(title="Holdout Validation Performance")+
+  theme(plot.title = element_text(hjust = 0.5))
+
+```
+
+```{r}
+######
+#Maps#
+######
+library(maps)
+
+#add lda predictions to the holdout set
+holdout <- cbind(holdout, lda_preds)
+
+#create haiti base map
+map_info <- map_data('world', region='Haiti')
+head(map_info)
+
+base_map <- ggplot(data=map_info, mapping=aes(x=long, y=lat, group=group))+
+  geom_polygon(color='black', fill='white')+
+  coord_quickmap()
+
+#set coord limits to zoom in on holdout regions 
+min_long <- -72.425
+max_long <- max(holdout$Lon)
+min_lat <- min(holdout$Lat)
+max_lat <- max(holdout$Lat)
+
+#add holdout data onto basemap
+holdout_map <- base_map+
+  geom_point(data=holdout, aes(x=Lon, y=Lat, color=BT, group=BT))+
+  coord_quickmap(xlim = c(-72.421, max_long),  ylim = c(min_lat, max_lat))+
+  scale_color_manual(values=c('steelblue','grey'))+
+  labs(title='Holdout Set Map', subtitle='Which observations did the model need to classify?')
+  
+holdout_map
+
+#create dataframes with just bluetarp obs + just other obs
+positives <- holdout %>% 
+  filter(BT=='bluetarp')
+negatives <- holdout %>% 
+  filter(BT=='other')
+
+#create bluetarp map
+positives_map <- base_map+
+  geom_point(data=positives, aes(x=Lon, y=Lat, color=bluetarp, group=bluetarp))+
+  coord_quickmap(xlim = c(-72.421, max_long),  ylim = c(min_lat, max_lat))+
+  scale_color_manual(name='Class', breaks=c('bluetarp', 'other'), labels=c('Blue Tarp (true positive)', 'Other (false negative)'), values=c('#2171B5','#CB181D'))+
+  labs(titles='Blue Tarps Map', subtitle='Which blue tarps did the model find?')
+
+positives_map
+
+#create other map
+negatives_map <- base_map+
+  geom_point(data=negatives, aes(x=Lon, y=Lat, color=bluetarp, group=bluetarp))+
+  coord_quickmap(xlim = c(-72.421, max_long),  ylim = c(min_lat, max_lat))+
+  scale_color_manual(name='Class', breaks=c('other', 'bluetarp'), labels=c('Other (true negative)','Blue Tarp (false positive)'), values=c('lightgreen','#CB181D'))+
+  labs(titles='Other Obs. Map', subtitle='Which other obs. did the model misclassify?')
+
+negatives_map
+```
+

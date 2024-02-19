@@ -1,0 +1,688 @@
+---
+title: "Disaster Relief Project 1"
+author: "Hallie Parten"
+date: "2023-03-07"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r global_options, cache=TRUE, include=FALSE}
+knitr::opts_chunk$set(error=TRUE,        # Keep compiling upon error
+                      collapse=FALSE,    # collapse by default
+                      echo=TRUE,         # echo code by default
+                      comment = "#>",    # change comment character
+                      fig.width = 10,     # set figure width
+                      fig.align = "center",# set figure position
+                      out.width = "100%", # set width of displayed images
+                      warning=FALSE,     # do not show R warnings
+                      message=FALSE)     # do not show R messages
+```
+
+```{r setup, cache=TRUE, include=FALSE}
+##load packages##
+library(dplyr)
+library(tidyr)
+library(tidyverse)
+library(ISLR2)
+library(caret)
+library(tidymodels)
+library(boot)
+library(RColorBrewer)
+library(plotly)
+library(reshape2)
+library(comprehenr)
+library(parallel)
+library(doParallel)
+
+#set working directory#
+setwd("/Users/zsk4gm/Desktop/DS6030/project_1")
+
+#import data##
+data <- read.csv('HaitiPixels.csv')
+```
+
+## Introduction
+
+This report will detail and justify the steps taken to build five different models that will predict the existence of a blue tarp from imagery data- three different colored pixel values. The goal is to choose the highest performing model that will be employed to locate blue tarps from high-resolution geo-referenced images of Haiti. The coordinates from these images will be deployed to rescue people displaced by the 2010 earthquake before they run out of food and water. Given these conditions, a "high performing" model will be both precise and efficient. This report will describe how each model was evaluated for those two criteria.
+
+## Data Wrangling and EDA
+
+To begin, I imported the training data set of 63,241 observations and 4 variables - 3 quantitative predictor variables: `Blue`, `Red`, `Green` colored pixel values, and 1 categorical response variable: `Class` of landscape object. First, I checked the data set for any missing values and found none. Then I checked the distributions of the quantitative predictors for any extreme values (indicating data entry errors) or differences in the scales.
+
+Below, we do not find any evidence of data entry errors or differences in the ranges of the predictor variables. The current combined range of all three predictor variables is from 44-255. I discuss my later decision to scale the range to a minimum interval in the model-building section of this report.
+
+```{r explore1, cache=TRUE, echo=FALSE, out.width="100%"}
+#check for na's#
+print('NA values:')
+sum(is.na(data)) 
+
+#summarize data#
+summary(data)
+
+#distributions of the quantitative predictors#
+#create a long format data frame#
+data_long <- data %>% 
+  pivot_longer(cols= Red:Blue, names_to='Color', values_to='Pixels') 
+
+#boxplot of pixels by color#
+box_color <- ggplot(data_long, aes(y=Pixels, fill=Color)) +
+  geom_boxplot(outlier.alpha=0.1) + 
+  theme(legend.position="bottom") + 
+  scale_fill_manual(values=c("#B3CDE3", "#CCEBC5", "#FBB4AE"))+ 
+  labs(title= "Distribution of Pixel Values by Color")+
+  theme(plot.title = element_text(hjust = 0.5))
+
+#density plot of pixels by color#
+density_color <- ggplot(data_long, aes(x=Pixels, fill=Color)) +
+  geom_density(alpha=.25)+ 
+  scale_fill_manual(values=c("#377EB8", "#4DAF4A", "#E41A1C"))+
+  theme(legend.position="bottom")
+
+gridExtra::grid.arrange(box_color, density_color, ncol=2)
+```
+
+Next I looked at a pairwise scatter plot of the quantitative predictors in the data set to assess the relationships between the predictors.
+
+Below, we see that all three predictors are strongly positvely correlated. These correlations potentially indicate shared information, similar patterns, or interaction- which this report investigates in the model building section. We also see a fanning out pattern in the pairwise plot which indicates heteroscedasticity or unequal variances in the predictors. Heteroscedasticity can lead to poor model fit, biased predictions, and therefore poor model performance which is not something that we can afford given the constraints and importance of this task.
+
+```{r echo=FALSE}
+##pairwise scatterplot
+pairs(data[2:4], upper.panel = NULL)
+```
+
+To achieve more consistent variance across the predictor variables' ranges, I applied a log transformation to each.
+
+In the updated pairwise scatter plots below, we see that fanning out pattern has been mostly resolved and the relationships among the predictors appear more linear.
+
+```{r echo=FALSE}
+library(dplyr)
+#log transform predictors
+data_log <- data %>% 
+  mutate(Green = log(Green)) %>% 
+  mutate(Red = log(Red)) %>% 
+  mutate(Blue = log(Blue))
+
+#updated scatterplot
+pairs(data_log[2:4], upper.panel = NULL)
+
+#updated longform dataset
+data_long_log <- data_log %>% 
+  pivot_longer(cols= Red:Blue, names_to='Color', values_to='Pixels') 
+```
+
+Next, I plotted the distributions of each predictor (colored pixel value) by `Class` to see if there was significant separation between classes by each predictor. I also created a 3D scatter plot to see if there was significant separation between classes by all three predictors.
+
+Below, we see significant separation, particularly for the `Blue Tarp` and `Vegetation` class.
+
+```{r explore2, cache=2, echo=FALSE, out.width="100%"}
+#boxplot of pixels by class and color
+ggplot(data_long_log, aes(y=Pixels, fill=Color, color=Class)) +
+  geom_boxplot(outlier.alpha=0.1) + 
+  theme(legend.position="right")+
+  scale_color_manual(values=c("#377EB8","#999999", "#A65628", "#E41A1C","#4DAF4A"))+ 
+  scale_fill_manual(values=c("#B3CDE3", "#CCEBC5", "#FBB4AE"))+
+  labs(title= "Distribution of Pixel Values by Color and Class")+
+  theme(plot.title = element_text(hjust = 0.5))
+
+#3D scatterplot 
+fig <- plot_ly(data_log, x = ~Red, y = ~Blue, z = ~Green, color = ~Class, colors = c("#377EB8","#999999", "#A65628", "#E41A1C","#4DAF4A"), type='scatter3d', mode='markers') %>% 
+  layout(title="3D Scatterplot of Pixel Values by Class")
+fig
+```
+
+Because of the distinct separation we observe for our class of interest, `Blue Tarp`, and because the goal of this model is to predict the presence of `Blue Tarp` alone, I chose to collapse the other classes to one class called, `Other`. The training data set now contained imagery data for two classes, `bluetarp` and `other`. Below, the table shows the imbalance among the relative frequencies for the two classes within the data set. *\*Note: I chose to set `bluetarp` as the reference class throughout the model building process.*
+
+```{r wrangle1, cache=TRUE, echo=FALSE, out.width="100%"}
+#create variable, BT, if Class = Blue Tarp
+data_binary <- data_log %>% 
+  mutate(BT = ifelse(Class=='Blue Tarp', 1, 0)) %>% 
+  select(-Class)
+
+#convert BT to factor and name levels
+data_binary$BT <- as.factor(data_binary$BT)
+levels(data_binary$BT) <- c("other", "bluetarp")
+data_binary$BT <- relevel(data_binary$BT, ref = "bluetarp")
+
+#class frequencies
+print("Class Frequencies:")
+table(data_binary$BT)
+```
+
+In the box plot below, we see that the separation looks the strongest for the `Blue` pixel predictor, which makes sense given that blue is the identifying color of the blue tarps that we are looking for. We also see the separation maintained in the density plot of `Blue` by `Class`. Lastly, we see the distinct separation of `bluetarp` is maintained in the 3D scatter plot of all three colored pixel values by `Class`. We also see that the shape of the binary class boundary appears approximately linear in the 3D scatter plot.
+
+```{r explore3, cache=TRUE, echo=FALSE, out.width="100%"}
+#long format for the new binary dataframe
+data_binary_long <- data_binary %>% 
+  pivot_longer(cols= Red:Blue, names_to='Color', values_to='Pixels')
+
+#boxplot of pixels by BT and color
+box_binary <- ggplot(data_binary_long, aes(y=Pixels, fill=Color, color=BT)) +
+  geom_boxplot(outlier.alpha=0.1) + 
+  theme(legend.position="right")+
+  scale_color_manual(values=c("#377EB8","black"))+ 
+  scale_fill_manual(values=c("#B3CDE3", "#CCEBC5", "#FBB4AE"))+
+  labs(title= "Distribution of Pixel Values by Color and Class")+
+  theme(plot.title = (element_text(size = rel(0.75), hjust = 0.5)))
+
+density_blue <- ggplot(data_binary, aes(x=Blue, fill=BT))+
+  geom_density(alpha=.25)+ 
+  scale_fill_manual(values=c("#377EB8","black"))+
+  theme(legend.position="bottom")+ 
+  labs(title= "Distribution of Blue Pixel Values by Class")+
+  theme(plot.title = (element_text(size = rel(0.85), hjust = 0.5)))
+
+gridExtra::grid.arrange(box_binary, density_blue, ncol=2)
+
+#3D scatterplot of 2 classes
+fig2 <- plot_ly(data_binary, x = ~Red, y = ~Blue, z = ~Green, color = ~BT, colors = c("#377EB8","black"), type='scatter3d', mode='markers') %>% 
+  layout(title="3D Scatterplot of Colored Pixed Values by Class")
+fig2
+```
+
+## Model Fitting, Tuning Parameter Selection, and Evaluation
+
+```{r echo=FALSE}
+##set up parallel processing##
+no_cores <- detectCores() - 1
+c1 <- makePSOCKcluster(no_cores)
+registerDoParallel(c1)
+```
+
+```{r model-function, cache=TRUE, echo=FALSE}
+##function to evaluate various models with 10-fold cross-validation##
+
+fitModel <- function(method, formula, tuneGrid, metric, ...) {
+  
+  trControl <- trControl <- caret::trainControl(method='cv', 
+                                                number=10,
+                                                savePredictions=TRUE,
+                                                classProbs=TRUE, 
+                                                summaryFunction = twoClassSummary, 
+                                                allowParallel = TRUE)
+  
+
+  model <- caret::train(formula, 
+                        data=data_binary,
+                        method=method,
+                        tuneGrid=tuneGrid,
+                        preProcess=c("center", "scale"),
+                        trControl=trControl,
+                        metric=metric,
+                        maximize=TRUE,
+                        ...)
+}
+```
+
+```{r roc-function, cache=TRUE, echo=FALSE}
+##functions to evaluate the ROC curve based on the out-of-fold predicted probabilities and AUC of each model##
+
+modelROC <- function(model){
+  predob_cv <- ROCR::prediction(model$pred$bluetarp, model$pred$obs, label.ordering=c('other', 'bluetarp'))
+  model.roc <- ROCR::performance(predob_cv, measure='tpr', x.measure='fpr')
+  plot(model.roc, colorize=T, print.cutoffs.at=c(0.10, 0.15, 0.25, 0.55), xlim=c(0,0.1), ylim=c(0.8,1))
+  lines(x=c(0,1), y=c(0,1), col='grey')
+}
+```
+
+```{r thresh-function, cache=TRUE, echo=FALSE}
+##function to select a threshold value##
+
+modelThreshold <- function(model, metrics){
+  threshold.stats <- caret::thresholder(model,
+                         threshold = seq(0.05, 0.95, by = 0.05),
+                         final=TRUE,
+                         statistics = "all")
+  threshold.stats$FNR <- 1 - threshold.stats$Sensitivity
+  threshold.stats$FPR <- 1 - threshold.stats$Specificity
+  
+  best_thresh <- which.max(threshold.stats$F1)
+  
+  return( threshold.stats %>% 
+            dplyr::select(all_of(metrics)) %>%
+            knitr::kable(digits=5) %>%
+            kableExtra::kable_styling(full_width=FALSE))
+}
+
+##function to compare threshold-selection metrics##
+graphThreshold <- function(model, metrics){
+  threshold.stats <- caret::thresholder(model,
+                         threshold = seq(0.05, 0.95, by = 0.05),
+                         statistics = "all")
+  threshold.stats$FNR <- 1 - threshold.stats$Sensitivity
+  threshold.stats$FPR <- 1 - threshold.stats$Specificity
+  
+  colnames <- colnames(threshold.stats)
+  non_metrics <- to_vec(for(i in colnames) if (!i %in% metrics) i)
+  threshold.stats.long <- melt(threshold.stats, value.name ='Values', id = non_metrics)
+  
+  return( ggplot(threshold.stats.long, aes(x=prob_threshold, y=Values, color=variable))+
+      geom_line())
+}
+
+```
+
+```{r echo=FALSE}
+##common model parameters##
+outcome <- "BT"
+predictors <- setdiff(colnames(data_binary), c(outcome, 'name'))
+```
+
+I built R functions to perform my model building with the arguments that would be necessary for all five models I planned to build. I used the `caret` package in R and set up the `trainControl` object to perform 10-fold cross-validation that optimized the model based on the area under the ROC curve. I passed three additional arguments to the `trainControl` object in my model training function, `classProbs=TRUE`, `savePredictions=TRUE`, and `summary=twoClassSummary` which allowed my model to access the out-of-fold predicted class probabilities to build an ROC curve. I also added the argument `metric='ROC'` to my `train` object which set the AUC as the metric to be used for optimizing tuning/complexity parameters.
+
+### Logistic Regression Model
+
+The first model I built was the logistic regression model. Initially, I chose to fit an additive regression of the binary response, `BT`, on the three colored pixel values, `Red`, `Blue`, and `Green`. Secondly, I decided to create a logistic regression model that included the main effects from `Blue`, `Green`, and `Red`, and interaction terms between the `Blue` pixel values and the other colored pixel values; `Blue:Red` and `Blue:Green`. This decision was based on the high correlations between predictors we observed in the pairwise scatter plots and on my working theory that the effect of `Blue` on predicting the presence of blue tarp in an image would depend on the level of `Red` and `Green` because certain combinations would prompt the blue to be more distinguishable in the image.
+
+Below we see the coefficients of the interactions terms are significant within a 99.99% significance level. Although the coefficient for `Red` is insignificant, I chose to leave all main effect predictors in the model due to the hierarchy principle. Additionally, the data set had sufficient sample size to justify the additional complexity and risk of over-fitting from the including the additional terms in the model.
+
+We see below that the AUC value for the model with the interaction terms is slightly higher than the AUC for the simple, additive model. This larger AUC value implies greater separation of classes and therefore better predictive power for the interaction model. We also see that the Sensitivity, or the ability to accurately predict `bluetarp` is greater for the model with the interaction terms. Given its higher predictive potential, I chose to explore threshold selection only for the interaction model.
+
+> For building each of my subsequent models, I decided to test these two subsets of predictors for model selection determined by the greater AUC value from cross-validation:
+>
+> -   3 Predictor Model/Additive Model: `Blue`, `Green`, `Red`.
+>
+> -   5 Predictor Model/Interaction Model: `Blue`, `Green`, `Red`, `Blue:Red`, `Blue:Green`.
+>
+> To accomodate the interaction terms, I added an the additional argument, `preProcess=c("center, "scale")` to my model-building function that would subtract the mean of the predictor's data from the predictor values and divide by the standard deviation. I chose to add this additional step to all of my models, because it would not hinder the performance estimates and it would help avoid any issues with distance calculations during the non-parametric KNN model-building.
+
+```{r log-function, cache=TRUE, dependson="model-function", echo=FALSE}
+##Logistic##
+set.seed(704)
+
+log_additive <- fitModel('glm', BT~., NULL, 'ROC', family='binomial')
+log_additive.performance <- c(log_additive$results$ROC, log_additive$results$Sens)
+
+log_interact <- fitModel('glm', BT~Blue*Red+Blue*Green, NULL, 'ROC', family='binomial')
+log_interact.performance <- c(log_interact$results$ROC, log_interact$results$Sens)
+
+summary(log_interact)
+
+metric <- c('AUC', 'Sensitivity')
+log.models <- data.frame(metric, log_additive.performance, log_interact.performance)
+log.models %>% 
+  knitr::kable(digits=6) %>%
+  kableExtra::kable_styling(full_width=FALSE)
+
+```
+
+Next, I reviewed the ROC curve that was created using the out-of-fold predicted probabilities and a table of other binary classification performance metrics to select the best probability threshold for my interaction model. Given the context of the prediction problem - identifying blue tarps expediently in order to provide life-saving rescue to storm-survivors in Haiti - it is important to both minimize false negatives to ensure that rescuers do not miss the opportunity to save a life and false positives to ensure that rescuers do not waste time searching where there is no one to be found. Therefore, I chose to select a threshold by maximizing the `F1` metric. `F1` is a combined measure of the model's ability to minimize false positives (high precision) and minimize false negatives (high recall/sensitivity) and is particularly useful when classes are imbalanced, as is the case here, and as such, accuracy can be misleading. The `F1` score is calculated using the following formula: $\frac {2 \times (Precision \times Recall)}{Precision + Recall}$ (*note: recall and sensitivity refer to the same concept and are calculated using the same formula. This report uses sensitivity and recall interchangeably*). A value of 1 indicates that the model and threshold achieves perfect precision and recall.
+
+*The ROC curve is zoomed in to the top left corner because the model performs relatively well at most thresholds.* We see in our table and graph below that `F1` is maximized in our interaction model at a threshold of 0.25. In Figure 1.1, we see that `F1` balances the counteracting effects of sensitivity and precision. In Figure 1.2, we see that a threshold of 0.25 would effectively balance the false negative rate and the false positive rate, ideally leading to an case of balanced precision of identifying all possible survivors in true blue tarps and efficiency of not wasting time/resources on false instances of blue tarps.
+
+```{r log-ROC, cache=TRUE, dependson="roc-function", echo=FALSE}
+log_ROC <- modelROC(log_interact)
+
+log_thresh <- modelThreshold(log_interact, c("prob_threshold", "F1", "Accuracy", "Sensitivity", "FPR"))
+log_thresh
+
+log_upper <- graphThreshold(log_interact, c('Sensitivity', 'Precision', 'F1'))+ 
+  labs(title="Figure 1.1")+
+  theme(legend.position="bottom")
+
+log_lower <- graphThreshold(log_interact, c('FPR', 'FNR'))+
+  theme(legend.position="bottom")+ 
+  labs(title="Figure 1.2")
+
+gridExtra::grid.arrange(log_upper, log_lower, ncol=2)
+
+log_final <- caret::thresholder(log_interact,
+                         threshold = 0.25,
+                         statistics = c("Sensitivity", "Precision", "F1"))
+```
+
+### Linear Discriminant Analysis Model (LDA)
+
+The second model I built was the LDA model. I followed the same process of fitting a three predictor (additive) model and a five predictor (interaction) model with the additional `Blue:Red` and `Blue:Green` predictors. I used the same metric of AUC to choose which model to proceed with for threshold selection.
+
+Below we see that the AUC for the interaction model is slightly higher than the AUC for the three predictor (additive) model. Given this higher metric for overall prediction performance, we proceed with threshold selection for the interaction model.
+
+```{r lda-function, cache=TRUE, dependson="model-function", echo=FALSE}
+##LDA##
+set.seed(704)
+
+lda_additive <- fitModel('lda', BT~., NULL, 'ROC')
+lda_additive.performance <- c(lda_additive$results$ROC, lda_additive$results$Sens)
+
+lda_interact <- fitModel('lda', BT~Blue*Red+Blue*Green, NULL, 'ROC')
+lda_interact.performance <- c(lda_interact$results$ROC, lda_interact$results$Sens)
+
+lda.models <- data.frame(metric, lda_additive.performance, lda_interact.performance)
+lda.models %>% 
+  knitr::kable(digits=6) %>%
+  kableExtra::kable_styling(full_width=FALSE)
+```
+
+In Figure 2.1 below, we see that the the LDA model with interaction terms performs best for the task of identifying blue tarps (sensitivity) at lower probability thresholds. Once again, I selected an overall threshold for the model by the `F1` metric, which was maximized at a 0.10 threshold.
+
+```{r lda-roc, cache=TRUE, dependson="roc-function", echo=FALSE}
+
+lda_ROC <- modelROC(lda_interact)
+
+lda_thresh <- modelThreshold(lda_interact, c("prob_threshold", "F1", "Accuracy", "Sensitivity", "FPR"))
+lda_thresh
+
+lda_upper <- graphThreshold(lda_interact, c('Sensitivity', 'Specificity', 'F1'))+ 
+  labs(title="Figure 2.1")+
+  theme(legend.position="bottom")
+
+lda_lower <- graphThreshold(lda_interact, c('FPR', 'FNR'))+
+  theme(legend.position="bottom")+ 
+  labs(title="Figure 2.2")
+
+gridExtra::grid.arrange(lda_upper, lda_lower, ncol=2)
+
+lda_final <- caret::thresholder(lda_interact,
+                         threshold = 0.10,
+                         statistics = c("Sensitivity", "Precision", "F1"))
+```
+
+### Quadratic Discriminant Analysis Model (QDA)
+
+The third model I built was the QDA model. Again, I built one model with the three (additive) and another model with the five predictors (interaction).
+
+Below we see that the AUC for the model with interaction terms is slightly lower than the simpler model. However, the Sensitivity, or the model's ability to accurately predict the `bluetarp` class is more than .9 higher for interaction model at this default 50% probability threshold. This is the most significant difference between model selection metrics. Therefore, we proceed with threshold investigation for both the five feature model and the three feature model.
+
+```{r qda-function, cache=TRUE, dependson="model-function", echo=FALSE}
+##QDA##
+set.seed(704)
+
+qda_additive <- fitModel('qda', BT~., NULL, 'ROC')
+qda_additive.performance <- c(qda_additive$results$ROC, qda_additive$results$Sens)
+
+qda_interact <- fitModel('qda', BT~Blue*Red*Blue*Green, NULL, 'ROC')
+qda_interact.performance <- c(qda_interact$results$ROC, qda_interact$results$Sens)
+
+
+qda.models <- data.frame(metric, qda_additive.performance, qda_interact.performance)
+qda.models %>% 
+  knitr::kable(digits=6) %>%
+  kableExtra::kable_styling(full_width=FALSE)
+```
+
+#### Three Feature QDA Model
+
+```{r echo=FALSE}
+qda_ROC_add <- modelROC(qda_additive)
+
+qda_thresh_add <- modelThreshold(qda_additive,c("prob_threshold", "F1", "Accuracy", "Sensitivity", "FPR"))
+qda_thresh_add
+
+qda_upper_add <- graphThreshold(qda_additive, c('Sensitivity', 'Precision', 'F1'))+ 
+  labs(title="Figure 3.1")+
+  theme(legend.position="bottom")
+
+qda_lower_add <- graphThreshold(qda_additive, c('FPR', 'FNR'))+
+  theme(legend.position="bottom")+ 
+  labs(title="Figure 3.2")
+
+gridExtra::grid.arrange(qda_upper_add, qda_lower_add, ncol=2)
+
+qda_final_add <- caret::thresholder(qda_additive,
+                         threshold = 0.25,
+                         statistics = c("Sensitivity", "Precision", "F1"))
+```
+
+#### Five Feature QDA Model
+
+```{r qda-roc, cache=TRUE, dependson="roc-function", echo=FALSE}
+qda_ROC <- modelROC(qda_interact)
+
+qda_thresh <- modelThreshold(qda_interact,c("prob_threshold", "F1", "Accuracy", "Sensitivity", "FPR"))
+qda_thresh
+
+qda_upper <- graphThreshold(qda_interact, c('Sensitivity', 'Precision', 'F1'))+ 
+  labs(title="Figure 3.1")+
+  theme(legend.position="bottom")
+
+qda_lower <- graphThreshold(qda_interact, c('FPR', 'FNR'))+
+  theme(legend.position="bottom")+ 
+  labs(title="Figure 3.2")
+
+gridExtra::grid.arrange(qda_upper, qda_lower, ncol=2)
+```
+
+By a comparison of both QDA models, we see that the highest `F1` is found at a theshold of 0.25 fo the 3 features (additive) model. Importantly, the Sensitivity is lower at this threshold for this model. however, we keep in mind that a higher `F1` means that we have sacrified marginal performed for accurately predicting `bluetarps` to reduce the inaccuracies of predicting `bluetarps` where there are in fact none.
+
+### K-nearest Neighbor Model (KNN)
+
+The fourth model I built was the KNN model. Again, I performed model selection for both the three predictor (additive) and five predictor model (interaction). In this instance, model selection involved tuning the parameter $k$, the size of the neighborhood. I also set up the tune grid to search over range of 5 to 50 by 4s for the optimal $k$. As mentioned earlier in this report, the argument to scale the feature values had already been added to the model-fitting function.
+
+The results of the model tuning via 10-fold cross-validation show that for the three feature 0.999709. The results for the 5 feature (interaction) model with 5 features tuned an optimal $k$ equal to 25 and a slightly greater AUC score of 0.999723. We proceed with the interaction model for threshold selection.
+
+```{r knn-function, cache=TRUE, dependson="model-function", echo=FALSE}
+#KNN##
+set.seed(704)
+KNN_tuneGrid <- expand.grid(k=seq(5, 50, by=4))
+
+knn_additive <- fitModel('knn', BT~., KNN_tuneGrid, 'ROC')
+knn_additive.performance <- knn_additive$results %>% filter(k==knn_additive$bestTune$k) %>% select(k, ROC, Sens)
+
+
+knn_interact <- fitModel ('knn', BT~ Blue*Red+Blue*Green, KNN_tuneGrid, 'ROC')
+knn_interact.performance <- knn_interact$results %>% filter(k==knn_interact$bestTune$k) %>% select(k, ROC, Sens)
+
+knn_additive.tune <- ggplot(knn_additive)+
+  geom_ribbon(data=knn_additive$results, aes(x=k, ymin=ROC-ROCSD, ymax=ROC+ROCSD), 
+              color='grey', alpha=0.2)+
+  geom_point(data=knn_additive$results %>% slice_max(ROC, n=1), color='red', size=2.5)+ 
+  labs(title='KNN (Additive Model) Performance Validation')+
+  theme(plot.title = element_text(size = rel(0.85), hjust = 0.5))
+
+knn_interact.tune <- ggplot(knn_interact)+
+  geom_ribbon(data=knn_interact$results, aes(x=k, ymin=ROC-ROCSD, ymax=ROC+ROCSD), 
+              color='grey', alpha=0.2)+
+  geom_point(data=knn_interact$results %>% slice_max(ROC, n=1), color='blue', size=2.5)+ 
+  labs(title='KNN (Interaction Model) Performance Validation')+
+  theme(plot.title = element_text(size = rel(0.85), hjust = 0.5))
+
+gridExtra::grid.arrange(knn_additive.tune, knn_interact.tune, ncol=2)
+
+models_knn <- c('Additive Model', 'Interaction Model')
+knn.models <- rbind(knn_additive.performance, knn_interact.performance)
+knn.models <- cbind(models_knn, knn.models)
+knn.models %>% 
+  knitr::kable(digits=6) %>%
+  kableExtra::kable_styling(full_width=FALSE)
+```
+
+Below we see a probability threshold of 0.55 gives us the greatest `F1` score for this KNN model with interaction terms.
+
+```{r echo=FALSE}
+knn_ROC <- modelROC(knn_interact)
+
+knn_thresh <- modelThreshold(knn_interact, c("prob_threshold", "F1", "Accuracy", "Sensitivity", "FPR"))
+knn_thresh
+
+knn_upper <- graphThreshold(knn_interact, c('Sensitivity', 'Precision', 'F1'))+ 
+  labs(title="Figure 4.1")+
+  theme(legend.position="bottom")
+
+knn_lower <- graphThreshold(knn_interact, c('FPR', 'FNR'))+
+  theme(legend.position="bottom")+ 
+  labs(title="Figure 4.2")
+
+gridExtra::grid.arrange(knn_upper, knn_lower, ncol=2)
+
+knn_final <- caret::thresholder(knn_interact,
+                         threshold = 0.55,
+                         statistics = c("Sensitivity", "Precision", "F1"))
+```
+
+### Penalized Logistic Regression Model
+
+The fifth and final model that I built was the penalized Logistic regression model. I chose to perform elastic net and tune both the $\alpha$, mixing percentage, and $\lambda$, regularization parameter, in the penalty. I set up the tune grid to search for an optimal $\alpha$ and $\lambda$ over a range of (0, 0.5, 1) and (10e-6 to 10e0.4) by 10e0.2, respectively. The model-fitting function was set to choose the optimal tuning parameters using the maximized AUC. I ran the model selection for both the three feature model and the five feature model.
+
+Below, the results of the tuning and selection via 10-fold cross validation for both models show that the optimal $\alpha$ equals 1. The optimal lambda value for the additive model was 6.0e-6 with an AUC of 0.999168. The optimal lambda value for the interaction model was 1.6e-05 with an AUC of 0.999397. We explore threshold selection and the effect of the penalty on the interaction model below.
+
+```{r echo=FALSE}
+showTuningResults <- function(model) {
+  results <- model$results
+  bestResults <- results %>% slice_max(ROC, n=1)
+  
+  ggplot(model) + 
+    geom_ribbon(data=results, aes(x=lambda, ymin=ROC-ROCSD, ymax=ROC+ROCSD), 
+                color='grey', alpha=0.2) +
+    geom_point(data=bestResults, color='red', size=2.5) +
+    scale_x_log10()
+}
+```
+
+```{r echo=FALSE}
+##glmnet helper function##
+bestTune_result = function(model) {
+  best = which(rownames(model$results) == rownames(model$bestTune))
+  best_result = model$results[best, ]
+  rownames(best_result) = NULL
+  best_result
+}
+```
+
+```{r echo=FALSE}
+##Elastic Net##
+set.seed(704)
+ENP_tuneGrid <- expand.grid(alpha=c(0, 0.5, 1), lambda=10^seq(-6, 0.4, 0.2)) 
+
+enp_additive <- fitModel('glmnet', BT~., ENP_tuneGrid, 'ROC', family='binomial') 
+enp_additive.performance <- bestTune_result(enp_additive)  %>% select(alpha, lambda, ROC, Sens)
+
+enp_interact <- fitModel('glmnet', BT~Blue*Red+Blue*Green, ENP_tuneGrid, 'ROC', family='binomial')
+enp_interact.performance <- bestTune_result(enp_interact) %>% select(alpha, lambda, ROC, Sens)
+
+enp_add.tune <- showTuningResults(enp_additive)+
+  labs(title="Additive Model Parameter Tuning")+
+  theme(legend.position="bottom")
+
+enp_interact.tune <- showTuningResults(enp_interact)+
+  labs(title="Interaction Model Parameter Tuning")+
+  theme(legend.position="bottom")
+
+gridExtra::grid.arrange(enp_add.tune, enp_interact.tune, ncol=2)
+
+models_enp <- c('Additive Model', 'Interaction Model')
+enp.models <- rbind(enp_additive.performance, enp_interact.performance)
+enp.models <- cbind(models_enp, enp.models)
+enp.models %>% 
+  knitr::kable(digits=6) %>%
+  kableExtra::kable_styling(full_width=FALSE)
+```
+
+An elastic net model with an $\alpha$ = 1 is equivalent to LASSO regression. While the lambda value of both models was small, almost zero, we can see by comparing the coefficient output from our regular logistic and penalized logistic regression that the penalty had an impact. We see that the coefficients for the predictors have been shrunk; the coefficient for `Blue:Green` was set exactly to zero.
+
+```{r echo=FALSE, warning=FALSE}
+enp_interact.coef <- as.data.frame.matrix(coef(enp_interact$finalModel, enp_interact$bestTune$lambda))
+
+log_compare <- cbind(data.frame(coef(log_interact$finalModel) %>% broom::tidy()), enp_interact.coef)
+
+colnames(log_compare) <- c('coefficients', 'logistic', 'penalized')
+log_compare
+
+plot(enp_interact$finalModel, xvar="lambda")
+```
+
+Below we see a probability threshold of 0.25 gives us the greatest `F1` score for this LASSO model with interaction terms.
+
+```{r echo=FALSE}
+enp_pred <- predict(enp_interact, data_binary, type='prob')
+predob_enp <- ROCR::prediction(enp_pred$bluetarp, data_binary$BT, label.ordering = c('other', 'bluetarp'))
+enp.roc <-ROCR:: performance(predob_enp, measure='tpr', x.measure='fpr')
+plot(enp.roc, colorize=T, print.cutoffs.at=c(0.10, 0.15, 0.25, 0.55), xlim=c(0,0.1), ylim=c(0.8,1))
+lines(x=c(0,1), y=c(0,1), col='grey')
+```
+
+```{r echo=FALSE}
+enp_thresh <- modelThreshold(enp_interact, c("prob_threshold", "F1", "Accuracy", "Sensitivity", "FPR"))
+enp_thresh
+
+enp_upper <- graphThreshold(enp_interact, c('Sensitivity', 'Precision', 'F1'))+ 
+  labs(title="Figure 5.1")+
+  theme(legend.position="bottom")
+
+enp_lower <- graphThreshold(enp_interact, c('FPR', 'FNR'))+
+  theme(legend.position="bottom")+ 
+  labs(title="Figure 5.2")
+
+gridExtra::grid.arrange(enp_upper, enp_lower, ncol=2)
+
+enp_final <- caret::thresholder(enp_interact,
+                         threshold = 0.25,
+                         statistics = c("Sensitivity", "Precision", "F1"))
+```
+
+```{r include=FALSE}
+##stop parallel processing##
+stopCluster(c1)
+registerDoSEQ()
+```
+
+## Performance Table
+
+To summarize the top performing models across all five categories, I created a bar plot to compare their `F1`, `Sensitivity,` and `Precision` at the selected probability threshold. In theory, the `F1` metric should balance the issue of false positives and false negatives that `Sensitivity` and `Precision` quantify.
+
+I also created a table that includes other threshold dependent (`FPR`) and threshold agnostic (`AUC` and `Accuracy`) metrics. All of the metrics were calculated using the re-sampling results from `caret`'s train object for each model. These metrics were calculated for each fold and the final reported metric is the average of the metrics calculated across all 10 folds.
+
+```{r echo=FALSE}
+enp_final <- enp_final %>% select(prob_threshold, Sensitivity, Precision, F1)
+log_final <- log_final %>% select(prob_threshold, Sensitivity, Precision, F1)
+lda_final <- lda_final %>% select(prob_threshold, Sensitivity, Precision, F1)
+qda_final_add <- qda_final_add %>% select(prob_threshold, Sensitivity, Precision, F1)
+knn_final <- knn_final %>% select(prob_threshold, Sensitivity, Precision, F1)
+
+comps <- rbind(log_final, lda_final, qda_final_add, knn_final, enp_final)
+model <- c("log", "lda", "qda", "knn", "enp")
+comps <- cbind(model, comps)
+
+comps.long <- melt(comps, value.name ='Values', id = c('model', 'prob_threshold'))
+
+ggplot(comps.long, aes(x=model, y=Values, fill=variable))+
+  geom_bar(stat='identity', position='dodge')+
+  scale_fill_brewer(palette = "Blues")+
+  theme_linedraw()+
+  labs(title="Comparison of Predictive Performance of All Models")+
+  theme(plot.title = element_text(hjust = 0.5))
+  
+  
+  
+```
+
++------------------------------------:+----------------------------------------------------------------------:+------------:+---------------------------:+-----------:+------------------+---------------------------+-------------+
+| ### **Model**                       | ### **Optimal Tuning Parameters**                                     | ### **AUC** | ### **Selected Threshold** | ### **F1** | ### **Accuracy** | ### **TPR (Sensitivity)** | ### **FPR** |
++-------------------------------------+-----------------------------------------------------------------------+-------------+----------------------------+------------+------------------+---------------------------+-------------+
+| **Logistic Regression**             | No. of Features: 5 - `Blue`, `Red`, `Green`, `Blue:Red`, `Blue:Green` | 0.999474    | 0.25                       | 0.94150    | 0.99617          | 0.96142                   | 0.00268     |
++-------------------------------------+-----------------------------------------------------------------------+-------------+----------------------------+------------+------------------+---------------------------+-------------+
+| **Linear Discriminant Analysis**    | No. of Features: 5 - `Blue`, `Red`, `Green`, `Blue:Red`, `Blue:Green` | 0.999027    | 0.10                       | 0.92685    | 0.99529          | 0.93272                   | 0.00265     |
++-------------------------------------+-----------------------------------------------------------------------+-------------+----------------------------+------------+------------------+---------------------------+-------------+
+| **Quadratic Discriminant Analysis** | No. of Features: 3 - `Blue`, `Red`, `Green`                           | 0.998685    | 0.25                       | 0.93137    | 0.99562          | 0.92879                   | 0.00217     |
++-------------------------------------+-----------------------------------------------------------------------+-------------+----------------------------+------------+------------------+---------------------------+-------------+
+| **K-Nearest Neighbors**             | No. of Features: 5 - `Blue`, `Red`, `Green`, `Blue:Red`, `Blue:Green` | 0.999723    | 0.55                       | 0.95134    | 0.99690          | 0.94807                   | 0.00149     |
+|                                     |                                                                       |             |                            |            |                  |                           |             |
+|                                     | $k$ = 25                                                              |             |                            |            |                  |                           |             |
++-------------------------------------+-----------------------------------------------------------------------+-------------+----------------------------+------------+------------------+---------------------------+-------------+
+| **Penalized Logistic Regression**   | No. of Features: 4 - `Blue`, `Red`, `Green` , `Blue:Red`              | 0.999397    | 0.25                       | 0.94431    | 0.99638          | 0.95894                   | 0.00238     |
+|                                     |                                                                       |             |                            |            |                  |                           |             |
+|                                     | $\alpha$ = 1                                                          |             |                            |            |                  |                           |             |
+|                                     |                                                                       |             |                            |            |                  |                           |             |
+|                                     | $\lambda$ = 1.6e-05                                                   |             |                            |            |                  |                           |             |
++-------------------------------------+-----------------------------------------------------------------------+-------------+----------------------------+------------+------------------+---------------------------+-------------+
+
+## Conclusions
+
+### 1) Which algorithm works best and how confident is that conclusion?
+
+Based on the predetermined metric of `F1` for model selection, the best performing algorithm is the K-Nearest Neighbors model with 5 features (`Blue`, `Red`, `Green`, `Blue:Red`, `Blue:Green`) and a $k=25$. I chose this metric as the standard for model selection at the outset because it signaled the most optimal equilibrium of precision and sensitivity to blue tarps in the training data set. Because I am not aware of the types of resources that the rescue team has on the ground (both in terms of time and manpower), I decided to hedge the distribution of false positive and negatives in my final model.
+
+The KNN model is the only non-parametric model this report considered. As such, our final model makes no assumptions about the data, has the lowest bias, but the most potential for variance. However, the large value for $k$ cast a wide net for the neighborhood (reducing the flexibility of the model) and given that the training set had more than 63,000 observations, I think that our model is at a fairly low risk for overfitting the data. That said, the true test of confidence in this model will come when we fit and evaluate it's performance on a holdout set of the data.
+
+### 2) Was there a clear winning algorithm?
+
+While the non-parametric KNN model worked best given our `F1` metric, the parametric models still worked very well on this data set. The penalized logistic regression `F1` metric was less than one-tenth of a point lower than the `F1` value of the KNN model. Interestingly, this model reduced the set of predictor variables to four by eliminating the interaction term `Blue:Green`. This penalty effectively reduced the complexity of the original logistic model and could potentially lead to better generalized prediction performance when we validate on the holdout set of the data. Even the more biased models, the Quadratic and Linear discriminant analysis models had high `F1` values.
+
+In our exploratory data analysis, we observed that the decision boundary between our two classes, `bluetarp` and `other` appeared approximately linear. There is a clear structure to the data, also evidenced by the large $k$ value for our optimal algorithm. Therefore, there are multiple models that could perform well on this task. When considering future tasks of this kind, constraints like time/computation resources could even be a factor worth considering given that the nonparametric and parameter tuned models will take longer to train and evaluate.
+
+### 3) How effective do you think your work here could actually be in terms of helping to save human life?
+
+I think that this work could be very helpful in saving human life. I think that these approximate 95 point percentages for both precision - a predictive measure of how well we will do finding displaced people where we say they are, and sensitivity - a predictive measure of how well we will do finding all of the displaced people that are actually out there, are high enough that they justify the time and effort given to building and validation the models for use. I also think that there is value in having multiple models to consider on the validation set and in the field.
+
+I've mentioned in this report that I don't know the extent of or lack of resources on the ground. However, if more information surfaces about the available resources, I can make necessary adjustment to the probability threshold to allow for more/less chance of false positives in the model. For exmaple, if there are additional resources, I view increasing the sensitivity and reducing the precision as the greatest elvel for potentially saving even more lives.
+
+I am interested in validating these models on the holdout set and applying them to the geo-referenced imagery data as the true test of their value. However, I think that the resampling metrics that we considered from our 10-fold cross-validation of a relatively large dataset is a very promising foundation.
